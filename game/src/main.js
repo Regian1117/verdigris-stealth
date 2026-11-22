@@ -1,12 +1,14 @@
-// VERDIGRIS main game engine loop, level loader, deterministic screenshot composer,
-// and state snapshot API for live play and automated verification.
+// VERDIGRIS main orchestrator: lean simulation/render loop, stage loader, HUD/world click routing,
+// double-tap restart guard, deterministic shot composer, and live verification snapshot API.
 
 import { buildLevelGeometry, getLevelDefinition, WORLD_HEIGHT, WORLD_WIDTH } from './levels.js';
+import { computeHeistSummary, createGameState, syncGlobalDetectionTier } from './state.js';
 import { computeVisionConePolygon } from './visibility.js';
 import { computePlayerVisibility, toggleWallLamp, updateDynamicLights } from './lighting.js';
-import { emitChimeDistraction, emitGuardFootstepRipple, updateSoundRipples } from './acoustics.js';
-import { createGuardsForLevel, updateGuardDetection, updateGuardPatrol } from './guards.js';
-import { aimAndTossChime, createPlayerState, interactWithNearbyObject, updatePlayerMovement } from './player.js';
+import { aimAndTossChime, emitChimeDistraction, emitGuardFootstepRipple, updateSoundRipples } from './acoustics.js';
+import { assignGuardArchetypes, updateGuardPatrol } from './patrol.js';
+import { applySentrySpotting, updateGuardDetection } from './detection.js';
+import { createPlayerState, deploySmokeVeil, interactWithNearbyObject, updatePlayerMovement } from './player.js';
 import { createStealthAudio } from './audio.js';
 import { bindKeyboardAndMouse, createInputState } from './input.js';
 import {
@@ -14,6 +16,7 @@ import {
   renderDynamicLightPools,
   renderFloorAndShadowHatch,
   renderRelicAndExitGate,
+  renderSmokeVeils,
 } from './render-world.js';
 import {
   renderFootstepRipples,
@@ -23,7 +26,6 @@ import {
   renderPlayerAndThrowArc,
 } from './render-entities.js';
 import {
-  computeHeistSummary,
   renderCaughtModal,
   renderHudBar,
   renderMissionCompleteModal,
@@ -38,15 +40,15 @@ export function startGameLoop() {
 
   bindKeyboardAndMouse(canvas, activeInput, () => viewport, handleAction);
 
-  const params = new URLSearchParams(window.location.search);
-  const shot = params.get('shot');
+  const shot = new URLSearchParams(window.location.search).get('shot');
   if (!applyDeterministicShotState(shot)) {
-    loadLevel(1, 'TITLE');
+    loadStage(1, 'TITLE');
   }
 
   window.__VERDIGRIS__ = {
     getSnapshot: getGameSnapshot,
-    loadLevel,
+    loadStage,
+    loadLevel: loadStage,
     applyShot: applyDeterministicShotState,
     getButtons: () => activeButtons,
     getViewport: () => viewport,
@@ -64,40 +66,20 @@ export function startGameLoop() {
   requestAnimationFrame(frame);
 }
 
-export function loadLevel(levelNumber, status = 'PLAYING') {
+export function loadStage(levelNumber, status = 'PLAYING') {
   const level = getLevelDefinition(levelNumber);
   const geometry = buildLevelGeometry(level);
   updateDynamicLights(geometry, 0, 0);
 
   const player = createPlayerState(level);
-  const guards = createGuardsForLevel(level, geometry);
+  const guards = assignGuardArchetypes(level, geometry);
   const playerVisibility = computePlayerVisibility(player, geometry);
 
-  activeState = {
-    status, // TITLE | PLAYING | COMPLETE | CAUGHT
-    selectedStage: level.id,
-    level,
-    geometry,
-    player,
-    playerVisibility,
-    guards,
-    ripples: [],
-    time: 1.2,
-    elapsed: 0,
-    lampsSnuffed: 0,
-    sentriesDisabled: 0,
-    chimesUsed: 0,
-    nearMissCount: 0,
-    alertsTriggered: 0,
-    showTelemetry: false,
-    bannerText: '',
-    bannerKind: 'info',
-    bannerTimer: 0,
-    caughtBy: null,
-    shotMode: false,
+  activeState = createGameState(level, geometry, player, guards, playerVisibility, {
+    status,
     lastRunSummary,
     completedStages,
-  };
+  });
   return activeState;
 }
 
@@ -105,120 +87,98 @@ export function applyDeterministicShotState(shotName) {
   if (!shotName) return false;
 
   if (shotName === 'infiltration') {
-    const s = loadLevel(2, 'PLAYING');
+    const s = loadStage(2, 'PLAYING');
     s.shotMode = true;
     s.time = 4.6;
     s.elapsed = 28.4;
     s.nearMissCount = 1;
     s.chimesUsed = 1;
+    s.treasures[0].collected = true;
+    s.lootCollected = 1;
+    s.lootScore = 150;
     updateDynamicLights(s.geometry, 0, s.time);
 
-    // Aim rotating brass wall sentry beam cleanly between the two east sandstone-bronze pillars
     if (s.geometry.sentries[0]) {
-      const sentry = s.geometry.sentries[0];
-      sentry.angle = Math.PI + 0.14;
-      sentry.polygon = computeVisionConePolygon(sentry.x, sentry.y, sentry.angle, sentry.halfFov, sentry.range, s.geometry);
+      const sn = s.geometry.sentries[0];
+      sn.angle = Math.PI + 0.14;
+      sn.polygon = computeVisionConePolygon(sn.x, sn.y, sn.angle, sn.halfFov, sn.range, s.geometry);
     }
 
-    // Player crouched HIDDEN · SHADOW behind northwest carved sandstone/bronze pillar
-    s.player.x = 242;
-    s.player.y = 180;
-    s.player.facing = 0.28;
-    s.player.crouching = true;
-    s.player.chimes = 2;
-    s.player.noiseLevel = 'SILENT';
+    s.player.x = 242; s.player.y = 176; s.player.facing = 0.28;
+    s.player.crouching = true; s.player.chimes = 2; s.player.smokes = 2; s.player.noiseLevel = 'SILENT';
 
-    // W1 (central-upper warden): mild CHECKING 34% cooling state toward a faint cyan chime echo
-    const echoX = 632;
-    const echoY = 204;
-    s.guards[0].x = 524;
-    s.guards[0].y = 124;
+    const echoX = 632; const echoY = 204;
+    s.guards[0].x = 524; s.guards[0].y = 124;
     s.guards[0].facing = Math.atan2(echoY - 124, echoX - 524);
-    s.guards[0].state = 'SUSPICIOUS';
-    s.guards[0].suspicion = 0.34;
-    s.guards[0].recovering = true;
-    s.guards[0].callout = 'CHECKING 34%';
-    s.guards[0].lastKnown = { x: echoX, y: echoY };
-    s.guards[0].stridePhase = 2.4;
+    s.guards[0].tier = 'WARY'; s.guards[0].suspicion = 0.38; s.guards[0].recovering = true;
+    s.guards[0].callout = 'WARY 38%'; s.guards[0].lastKnown = { x: echoX, y: echoY };
+    s.guards[1].x = 326; s.guards[1].y = 264; s.guards[1].facing = -2.35;
+    s.guards[2].x = 588; s.guards[2].y = 530; s.guards[2].facing = -2.18;
+    s.guards[3].x = 788; s.guards[3].y = 330; s.guards[3].facing = -0.92;
 
-    // W2-W4 patrolling calmly with crisp cover-blocked vision cones
-    s.guards[1].x = 326; s.guards[1].y = 264; s.guards[1].facing = -2.35; s.guards[1].stridePhase = 1.1;
-    s.guards[2].x = 588; s.guards[2].y = 534; s.guards[2].facing = -2.18; s.guards[2].stridePhase = 0.6;
-    s.guards[3].x = 788; s.guards[3].y = 330; s.guards[3].facing = -0.92; s.guards[3].stridePhase = 3.1;
-
-    // Faint chime echo ring + guard footstep ripples
     emitChimeDistraction(s, echoX, echoY);
-    s.ripples[0].age = 0.78;
-    s.ripples[0].radius = 122;
-    s.ripples[0].label = 'CHIME ECHO';
-
+    s.ripples[0].age = 0.78; s.ripples[0].radius = 122; s.ripples[0].label = 'CHIME ECHO';
     for (const g of s.guards) emitGuardFootstepRipple(s, g);
-    s.ripples[1].age = 0.42; s.ripples[1].radius = 52;
+    s.ripples[1].age = 0.42; s.ripples[1].radius = 50;
     s.ripples[2].age = 0.24; s.ripples[2].radius = 38;
     s.ripples[3].age = 0.30; s.ripples[3].radius = 44;
     s.ripples[4].age = 0.18; s.ripples[4].radius = 31;
 
-    recomputeAllVisionCones(s);
+    recomputeScene(s);
     return true;
   }
 
   if (shotName === 'alert-recovery') {
-    const s = loadLevel(3, 'PLAYING');
+    const s = loadStage(3, 'PLAYING');
     s.shotMode = true;
     s.time = 7.4;
     s.elapsed = 41.2;
     s.nearMissCount = 1;
     s.chimesUsed = 1;
-    s.bannerText = 'NEAR MISS · COOLING 68%';
+    s.smokesUsed = 1;
+    s.player.hasKey = true;
+    s.treasures[0].collected = true;
+    s.lootCollected = 1;
+    s.lootScore = 150;
+    s.bannerText = 'NEAR MISS · HIDE TO COOL';
     s.bannerKind = 'warn';
     s.bannerTimer = 3.0;
+
+    // Active swirling Smoke Veil positioned so it cleanly slices the RIGHT half of W1's SEARCH cone
+    // while the LEFT half sweeps full-length down the aisle (unmistakable raycast occlusion at 244px!)
+    s.geometry.smokeClouds.push({ x: 372, y: 382, radius: 66, currentRadius: 66, age: 1.4, duration: 6.5 });
     updateDynamicLights(s.geometry, 0, s.time);
 
     if (s.geometry.sentries[0]) {
-      const sentry = s.geometry.sentries[0];
-      sentry.angle = -1.24;
-      sentry.polygon = computeVisionConePolygon(sentry.x, sentry.y, sentry.angle, sentry.halfFov, sentry.range, s.geometry);
+      const sn = s.geometry.sentries[0];
+      sn.angle = -1.24;
+      sn.polygon = computeVisionConePolygon(sn.x, sn.y, sn.angle, sn.halfFov, sn.range, s.geometry);
     }
 
-    // Player crouched safely in hatched shadow behind carved crimson bookcase while W1 cools
-    s.player.x = 180;
-    s.player.y = 348;
-    s.player.facing = -0.35;
-    s.player.crouching = true;
-    s.player.chimes = 2;
-    s.player.noiseLevel = 'SILENT';
+    s.player.x = 176; s.player.y = 356; s.player.facing = -0.35;
+    s.player.crouching = true; s.player.chimes = 2; s.player.smokes = 1; s.player.noiseLevel = 'SILENT';
 
-    // W1 flared bright orange with "WHAT WAS THAT?" + radial ? 68% + dotted last-known marker
-    s.guards[0].x = 344;
-    s.guards[0].y = 240;
-    s.guards[0].facing = 2.02;
-    s.guards[0].state = 'SUSPICIOUS';
-    s.guards[0].suspicion = 0.68;
-    s.guards[0].recovering = true;
+    // W1 (Acute Listener) in SEARCH 68% with visible floor timer ring, cone visibly bisected by Smoke Veil
+    s.guards[0].x = 342; s.guards[0].y = 222; s.guards[0].facing = 1.66;
+    s.guards[0].tier = 'SEARCH'; s.guards[0].suspicion = 0.68; s.guards[0].recovering = true;
     s.guards[0].callout = 'WHAT WAS THAT?';
-    s.guards[0].lastKnown = { x: 278, y: 404 };
+    s.guards[0].searchTimer = 2.9; s.guards[0].searchMaxTime = 4.6;
+    s.guards[0].lastKnown = { x: 266, y: 462 };
 
-    // W2 flared toward vibrant cyan CHIME ripple with "HEARD CHIME"
-    const chimeX = 708;
-    const chimeY = 296;
-    s.guards[1].x = 562;
-    s.guards[1].y = 236;
+    // W2 lured toward cyan chime ripple
+    const chimeX = 708; const chimeY = 296;
+    s.guards[1].x = 562; s.guards[1].y = 236;
     s.guards[1].facing = Math.atan2(chimeY - 236, chimeX - 562);
-    s.guards[1].state = 'INVESTIGATING';
-    s.guards[1].suspicion = 0.44;
-    s.guards[1].callout = 'HEARD CHIME';
-    s.guards[1].investigateKind = 'chime';
+    s.guards[1].tier = 'WARY'; s.guards[1].suspicion = 0.44;
+    s.guards[1].callout = 'HEARD CHIME'; s.guards[1].investigateKind = 'chime';
     s.guards[1].investigateTarget = { x: chimeX, y: chimeY };
     s.guards[1].lastKnown = { x: chimeX, y: chimeY };
 
-    // W3 & W4 patrolling lower/east archive aisles
-    s.guards[2].x = 738; s.guards[2].y = 548; s.guards[2].facing = 3.0;
+    s.guards[2].x = 786; s.guards[2].y = 548; s.guards[2].facing = 3.0;
     s.guards[3].x = 978; s.guards[3].y = 178; s.guards[3].facing = 1.95;
 
     emitChimeDistraction(s, chimeX, chimeY);
-    s.ripples[0].age = 0.44;
-    s.ripples[0].radius = 128;
-
+    s.ripples[0].age = 0.44; s.ripples[0].radius = 128;
     emitGuardFootstepRipple(s, s.guards[0]);
     emitGuardFootstepRipple(s, s.guards[2]);
     emitGuardFootstepRipple(s, s.guards[3]);
@@ -226,39 +186,37 @@ export function applyDeterministicShotState(shotName) {
     s.ripples[2].age = 0.36; s.ripples[2].radius = 48;
     s.ripples[3].age = 0.22; s.ripples[3].radius = 34;
 
-    recomputeAllVisionCones(s);
+    recomputeScene(s);
     return true;
   }
 
   if (shotName === 'extraction-route') {
-    const s = loadLevel(4, 'PLAYING');
+    const s = loadStage(4, 'PLAYING');
     s.shotMode = true;
     s.time = 11.2;
     s.elapsed = 52.6;
     s.nearMissCount = 1;
     s.chimesUsed = 1;
+    s.smokesUsed = 1;
+    s.player.hasKey = true;
+    s.player.hasRelic = true;
+    for (const t of s.treasures) t.collected = true;
+    s.lootCollected = s.treasures.length;
+    s.lootScore = 375;
 
-    // Snuff the north canal bridge dock lamp to carve a clear shadow corridor
     toggleWallLamp(s.geometry.lights[1], s.geometry);
     s.lampsSnuffed = 1;
     s.geometry.lights[1].snuffSmoke = 0.95;
     updateDynamicLights(s.geometry, 0, s.time);
 
-    // Sweeping dock sentry beam active on the east dock right below EXIT
     if (s.geometry.sentries[0]) {
-      const sentry = s.geometry.sentries[0];
-      sentry.angle = 2.66;
-      sentry.polygon = computeVisionConePolygon(sentry.x, sentry.y, sentry.angle, sentry.halfFov, sentry.range, s.geometry);
+      const sn = s.geometry.sentries[0];
+      sn.angle = 2.66;
+      sn.polygon = computeVisionConePolygon(sn.x, sn.y, sn.angle, sn.halfFov, sn.range, s.geometry);
     }
 
-    // Player carrying stolen Brass Chronometer sneaking unseen past overlapping cones toward EXIT · OPEN
-    s.player.hasRelic = true;
-    s.player.x = 716;
-    s.player.y = 120;
-    s.player.facing = -0.06;
-    s.player.crouching = true;
-    s.player.chimes = 2;
-    s.player.noiseLevel = 'SILENT';
+    s.player.x = 716; s.player.y = 120; s.player.facing = -0.06;
+    s.player.crouching = true; s.player.chimes = 2; s.player.smokes = 1; s.player.noiseLevel = 'SILENT';
 
     s.guards[0].x = 278; s.guards[0].y = 336; s.guards[0].facing = -1.45;
     s.guards[1].x = 434; s.guards[1].y = 212; s.guards[1].facing = -0.22;
@@ -271,7 +229,7 @@ export function applyDeterministicShotState(shotName) {
     s.ripples[3].age = 0.34; s.ripples[3].radius = 48;
     s.ripples[4].age = 0.20; s.ripples[4].radius = 33;
 
-    recomputeAllVisionCones(s);
+    recomputeScene(s);
     return true;
   }
 
@@ -281,15 +239,18 @@ export function applyDeterministicShotState(shotName) {
       stageId: 1,
       stageName: 'The Limestone Cloister',
       rating: 'GHOST',
-      score: 2450,
+      score: 2850,
       alarms: 0,
       nearMisses: 2,
       lampsSnuffed: 1,
       chimesUsed: 1,
+      smokesUsed: 1,
+      lootCollected: 3,
+      lootTotal: 3,
       elapsed: 38.4,
     };
 
-    const s = loadLevel(1, 'TITLE');
+    const s = loadStage(1, 'TITLE');
     s.shotMode = true;
     s.selectedStage = 2;
     s.time = 3.2;
@@ -306,7 +267,7 @@ export function applyDeterministicShotState(shotName) {
     s.ripples[0].age = 0.30; s.ripples[0].radius = 44;
     s.ripples[1].age = 0.22; s.ripples[1].radius = 34;
 
-    recomputeAllVisionCones(s);
+    recomputeScene(s);
     return true;
   }
 
@@ -320,29 +281,39 @@ export function getGameSnapshot() {
     status: s.status,
     stage: s.level.id,
     stageName: s.level.name,
+    detectionTier: s.detectionTier,
+    showTelemetry: s.showTelemetry,
+    restartArmed: s.restartArmedTimer > 0,
     player: {
       x: Math.round(s.player.x * 10) / 10,
       y: Math.round(s.player.y * 10) / 10,
       crouching: s.player.crouching,
       hidden: s.playerVisibility.hidden,
+      inSmoke: s.playerVisibility.inSmoke,
       visibility: s.playerVisibility.label,
       noise: s.player.noiseLevel,
       chimes: s.player.chimes,
+      smokes: s.player.smokes,
+      hasKey: s.player.hasKey,
       hasRelic: s.player.hasRelic,
     },
     guards: s.guards.map((g) => ({
       id: g.id,
-      state: g.state,
+      archetype: g.archetype,
+      tier: g.tier,
       suspicion: Math.round(g.suspicion * 100),
+      conePts: g.visionPolygon.length,
     })),
-    sentriesActive: (s.geometry.sentries || []).filter((sn) => sn.active).length,
+    smokeClouds: s.geometry.smokeClouds.length,
+    lootCollected: s.lootCollected,
+    lootTotal: s.lootTotal,
     nearMissCount: s.nearMissCount,
     lampsSnuffed: s.lampsSnuffed,
     ripples: s.ripples.length,
   };
 }
 
-const HUD_TOP = 50;
+const HUD_TOP = 52;
 const HUD_BOTTOM = 38;
 
 let activeState = null;
@@ -353,18 +324,12 @@ let lastRunSummary = null;
 const completedStages = new Set();
 let viewport = { width: 1280, height: 800, scale: 1, offsetX: 0, offsetY: 0 };
 
-function recomputeAllVisionCones(state) {
-  for (const guard of state.guards) {
-    guard.visionPolygon = computeVisionConePolygon(
-      guard.x,
-      guard.y,
-      guard.facing,
-      guard.halfFov,
-      guard.range,
-      state.geometry,
-    );
+function recomputeScene(state) {
+  for (const g of state.guards) {
+    g.visionPolygon = computeVisionConePolygon(g.x, g.y, g.facing, g.halfFov, g.range, state.geometry);
   }
   state.playerVisibility = computePlayerVisibility(state.player, state.geometry);
+  syncGlobalDetectionTier(state);
 }
 
 function handleAction(type, payload) {
@@ -374,57 +339,55 @@ function handleAction(type, payload) {
   if (type === 'key') {
     if (s.shotMode) s.shotMode = false;
 
-    if (payload === 'KeyM') {
-      activeAudio.toggleMute();
-      return;
-    }
-    if (payload === 'Tab') {
-      s.showTelemetry = !s.showTelemetry;
-      return;
-    }
-    if (payload === 'Escape') {
-      s.status = s.status === 'TITLE' ? 'PLAYING' : 'TITLE';
-      return;
-    }
+    if (payload === 'KeyM') { activeAudio.toggleMute(); return; }
+    if (payload === 'Tab') { s.showTelemetry = !s.showTelemetry; return; }
+    if (payload === 'Escape') { s.status = s.status === 'TITLE' ? 'PLAYING' : 'TITLE'; return; }
     if (payload.startsWith('Digit')) {
       const n = Number(payload.slice(5));
-      if (n >= 1 && n <= 5) {
-        loadLevel(n, 'PLAYING');
-        return;
-      }
+      if (n >= 1 && n <= 5) { loadStage(n, 'PLAYING'); return; }
     }
     if (s.status === 'TITLE' && (payload === 'Enter' || payload === 'Space')) {
-      loadLevel(s.selectedStage, 'PLAYING');
+      loadStage(s.selectedStage, 'PLAYING');
       return;
     }
     if (s.status === 'CAUGHT' && (payload === 'KeyR' || payload === 'Enter' || payload === 'Space')) {
-      loadLevel(s.level.id, 'PLAYING');
+      loadStage(s.level.id, 'PLAYING');
       return;
     }
     if (s.status === 'COMPLETE' && (payload === 'Enter' || payload === 'Space')) {
-      const next = s.level.id < 5 ? s.level.id + 1 : 1;
-      loadLevel(next, 'PLAYING');
+      loadStage(s.level.id < 5 ? s.level.id + 1 : 1, 'PLAYING');
       return;
     }
+
     if (s.status === 'PLAYING') {
       if (payload === 'KeyR') {
-        loadLevel(s.level.id, 'PLAYING');
+        if (s.restartArmedTimer > 0) {
+          loadStage(s.level.id, 'PLAYING');
+        } else {
+          s.restartArmedTimer = 2.6;
+          s.bannerText = 'PRESS R AGAIN TO RESTART';
+          s.bannerKind = 'warn';
+          s.bannerTimer = 2.6;
+        }
+      } else if (payload === 'KeyF') {
+        deploySmokeVeil(s, activeAudio);
       } else if (payload === 'KeyE') {
         interactWithNearbyObject(s, activeAudio);
-        if (s.status === 'COMPLETE') {
-          completedStages.add(s.level.id);
-          lastRunSummary = computeHeistSummary(s);
-          s.lastRunSummary = lastRunSummary;
-        }
+        if (s.status === 'COMPLETE') finalizeStageClear(s);
       } else if (payload === 'KeyQ') {
         const target = activeInput.mouseInCanvas
           ? activeInput.mouseWorld
-          : {
-              x: s.player.x + Math.cos(s.player.facing) * 165,
-              y: s.player.y + Math.sin(s.player.facing) * 165,
-            };
+          : { x: s.player.x + Math.cos(s.player.facing) * 165, y: s.player.y + Math.sin(s.player.facing) * 165 };
         aimAndTossChime(s, target, activeAudio);
       }
+    }
+    return;
+  }
+
+  if (type === 'rightclick') {
+    if (s.shotMode) s.shotMode = false;
+    if (s.status === 'PLAYING' && payload.canvasY > HUD_TOP && payload.canvasY < viewport.height - HUD_BOTTOM) {
+      deploySmokeVeil(s, activeAudio);
     }
     return;
   }
@@ -433,36 +396,35 @@ function handleAction(type, payload) {
     if (s.shotMode) s.shotMode = false;
     const { canvasX, canvasY, worldX, worldY } = payload;
 
+    // 1. Check all HUD & modal button hitboxes FIRST — never throw a chime when clicking UI!
     for (let i = activeButtons.length - 1; i >= 0; i--) {
       const b = activeButtons[i];
       if (canvasX >= b.x && canvasX <= b.x + b.w && canvasY >= b.y && canvasY <= b.y + b.h) {
-        if (b.id === 'start') {
-          loadLevel(s.selectedStage, 'PLAYING');
-        } else if (b.id.startsWith('select-')) {
-          if (s.selectedStage === b.stage) {
-            loadLevel(b.stage, 'PLAYING');
-          } else {
-            s.selectedStage = b.stage;
-          }
-        } else if (b.id.startsWith('stage-')) {
-          loadLevel(b.stage, 'PLAYING');
-        } else if (b.id === 'next-stage') {
-          loadLevel(Math.min(5, s.level.id + 1), 'PLAYING');
-        } else if (b.id === 'retry') {
-          loadLevel(s.level.id, 'PLAYING');
-        } else if (b.id === 'menu') {
-          s.status = 'TITLE';
-        } else if (b.id === 'mute') {
-          activeAudio.toggleMute();
-        }
+        if (b.id === 'start') loadStage(s.selectedStage, 'PLAYING');
+        else if (b.id.startsWith('select-')) {
+          if (s.selectedStage === b.stage) loadStage(b.stage, 'PLAYING');
+          else s.selectedStage = b.stage;
+        } else if (b.id.startsWith('stage-')) loadStage(b.stage, 'PLAYING');
+        else if (b.id === 'next-stage') loadStage(Math.min(5, s.level.id + 1), 'PLAYING');
+        else if (b.id === 'retry') loadStage(s.level.id, 'PLAYING');
+        else if (b.id === 'menu') s.status = 'TITLE';
+        else if (b.id === 'mute') activeAudio.toggleMute();
         return;
       }
     }
 
-    if (s.status === 'PLAYING' && canvasY > HUD_TOP && canvasY < viewport.height - HUD_BOTTOM) {
-      aimAndTossChime(s, { x: worldX, y: worldY }, activeAudio);
-    }
+    // 2. Ignore clicks inside top/bottom HUD chrome or non-PLAYING overlays
+    if (s.status !== 'PLAYING' || canvasY <= HUD_TOP || canvasY >= viewport.height - HUD_BOTTOM) return;
+
+    // 3. Genuine world click -> toss Brass Chime
+    aimAndTossChime(s, { x: worldX, y: worldY }, activeAudio);
   }
+}
+
+function finalizeStageClear(state) {
+  completedStages.add(state.level.id);
+  lastRunSummary = computeHeistSummary(state);
+  state.lastRunSummary = lastRunSummary;
 }
 
 function updateSimulation(state, dt) {
@@ -471,9 +433,8 @@ function updateSimulation(state, dt) {
   updateDynamicLights(state.geometry, dt, state.time);
   updateSoundRipples(state, dt);
 
-  if (state.bannerTimer > 0) {
-    state.bannerTimer = Math.max(0, state.bannerTimer - dt);
-  }
+  if (state.bannerTimer > 0) state.bannerTimer = Math.max(0, state.bannerTimer - dt);
+  if (state.restartArmedTimer > 0) state.restartArmedTimer = Math.max(0, state.restartArmedTimer - dt);
 
   if (state.status === 'TITLE') {
     for (const guard of state.guards) {
@@ -490,36 +451,13 @@ function updateSimulation(state, dt) {
   state.elapsed += dt;
   updatePlayerMovement(state, activeInput, dt, activeAudio);
   state.playerVisibility = computePlayerVisibility(state.player, state.geometry);
-
-  // If caught in a rotating brass sentry lantern beam, alert the nearest warden
-  if (state.playerVisibility.inSentryBeam && state.guards.length > 0) {
-    let nearest = state.guards[0];
-    let bestD = Infinity;
-    for (const g of state.guards) {
-      const d = Math.hypot(g.x - state.player.x, g.y - state.player.y);
-      if (d < bestD) {
-        bestD = d;
-        nearest = g;
-      }
-    }
-    nearest.lastKnown = { x: state.player.x, y: state.player.y };
-    nearest.recovering = false;
-    nearest.suspicion = Math.min(1, nearest.suspicion + dt * 0.72);
-    if (nearest.suspicion >= 0.30) nearest.nearMissCandidate = true;
-    if (nearest.state === 'PATROL') {
-      nearest.state = 'SUSPICIOUS';
-      nearest.callout = 'WHAT WAS THAT?';
-      activeAudio.playSuspicionSting(false);
-    }
-  }
+  applySentrySpotting(state, dt, activeAudio);
 
   if (state.player.hasRelic) {
     const dExit = Math.hypot(state.player.x - state.level.exit.x, state.player.y - state.level.exit.y);
     if (dExit <= state.level.exit.radius * 0.62) {
       state.status = 'COMPLETE';
-      completedStages.add(state.level.id);
-      lastRunSummary = computeHeistSummary(state);
-      state.lastRunSummary = lastRunSummary;
+      finalizeStageClear(state);
       activeAudio.playExtractionChord(true);
       return;
     }
@@ -554,15 +492,6 @@ function renderFrame(ctx, canvas, state) {
   ctx.fillStyle = state.level.palette.surround;
   ctx.fillRect(0, 0, cssW, cssH);
 
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
-  ctx.lineWidth = 1;
-  for (let gx = 0; gx < cssW; gx += 48) {
-    ctx.beginPath();
-    ctx.moveTo(gx, 0);
-    ctx.lineTo(gx, cssH);
-    ctx.stroke();
-  }
-
   ctx.save();
   ctx.translate(offsetX, offsetY);
   ctx.scale(scale, scale);
@@ -574,9 +503,10 @@ function renderFrame(ctx, canvas, state) {
   renderFootstepRipples(ctx, state, false);
   renderRelicAndExitGate(ctx, state);
   renderCoverArchitecture(ctx, state);
+  renderSmokeVeils(ctx, state);
   renderFootstepRipples(ctx, state, true);
   renderGuardsAndAlertMeters(ctx, state);
-  renderPlayerAndThrowArc(ctx, state, activeInput);
+  renderPlayerAndThrowArc(ctx, state, activeInput, { top: HUD_TOP, bottom: cssH - HUD_BOTTOM });
 
   ctx.restore();
 

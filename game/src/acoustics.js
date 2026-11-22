@@ -1,24 +1,32 @@
-// Spatial acoustics: visible & audible concentric footstep ripples, floor surface noise,
-// and brass chime distraction pulses that lure nearby guards to investigate.
+// Full acoustic stealth & Brass Chime lifecycle: parabolic chime throw, acoustic ripple pulses,
+// surface-aware & smoke-muffled footsteps, and Acute Listener hearing propagation.
 
-export function emitGuardFootstepRipple(state, guard) {
-  const isAlert = guard.state === 'ALERT' || guard.state === 'SEARCHING';
-  state.ripples.push({
-    x: guard.x,
-    y: guard.y,
-    radius: 8,
-    maxRadius: isAlert ? 92 : 70,
+export function aimAndTossChime(state, targetWorld, audio) {
+  const player = state.player;
+  if (player.chimes <= 0 || player.activeChime) return false;
+  const land = getChimeLandingPoint(player, targetWorld);
+  player.chimes -= 1;
+  state.chimesUsed = (state.chimesUsed || 0) + 1;
+  player.facing = Math.atan2(land.y - player.y, land.x - player.x);
+  player.noiseLevel = 'SOFT';
+  player.noiseTimer = 0.55;
+  player.activeChime = {
+    startX: player.x,
+    startY: player.y,
+    targetX: land.x,
+    targetY: land.y,
+    x: player.x,
+    y: player.y,
+    z: 0,
     age: 0,
-    duration: isAlert ? 0.82 : 0.92,
-    kind: 'guard-step',
-    color: isAlert ? '#ff6b6b' : guard.state === 'SUSPICIOUS' || guard.state === 'INVESTIGATING' ? '#ffaa44' : '#f2d388',
-    throughWalls: true,
-    rings: 2,
-  });
+    duration: 0.32,
+  };
+  if (audio) audio.playPlayerSurfaceStep('stone', true);
+  return true;
 }
 
 export function emitChimeDistraction(state, x, y) {
-  const lureRadius = 310;
+  const lureRadius = 315;
   state.ripples.push({
     x,
     y,
@@ -35,36 +43,24 @@ export function emitChimeDistraction(state, x, y) {
   return lureRadius;
 }
 
-export function propagateSoundToGuards(state, x, y, radius, kind, onGuardInvestigate) {
-  if (radius <= 0) return null;
-
-  let chosenGuard = null;
-  let bestDist = Infinity;
-
-  for (const guard of state.guards) {
-    const dist = Math.hypot(guard.x - x, guard.y - y);
-    if (dist > radius) continue;
-
-    if (kind === 'chime') {
-      if (guard.state !== 'ALERT' && dist < bestDist) {
-        bestDist = dist;
-        chosenGuard = guard;
-      }
-    } else if (kind === 'player-step') {
-      if (guard.state !== 'ALERT' && dist < radius) {
-        onGuardInvestigate(guard, x, y, 'footstep');
-      }
-    }
-  }
-
-  if (kind === 'chime' && chosenGuard) {
-    onGuardInvestigate(chosenGuard, x, y, 'chime');
-    return chosenGuard;
-  }
-  return null;
+export function emitGuardFootstepRipple(state, guard) {
+  const tier = guard.tier || 'QUIET';
+  const isHot = tier === 'LOCKDOWN' || tier === 'SEARCH';
+  state.ripples.push({
+    x: guard.x,
+    y: guard.y,
+    radius: 8,
+    maxRadius: isHot ? 92 : 70,
+    age: 0,
+    duration: isHot ? 0.82 : 0.92,
+    kind: 'guard-step',
+    color: tier === 'LOCKDOWN' ? '#ff5468' : isHot || tier === 'WARY' ? '#ff9e44' : guard.archetype === 'listener' ? '#cfe6ff' : '#f2d388',
+    throughWalls: true,
+    rings: 2,
+  });
 }
 
-export function emitPlayerNoiseRipple(state, x, y, surface, crouching) {
+export function emitPlayerNoiseRipple(state, x, y, surface, crouching, inSmoke = false) {
   if (crouching || surface === 'rug') return 0;
 
   let radius = 58;
@@ -76,6 +72,7 @@ export function emitPlayerNoiseRipple(state, x, y, surface, crouching) {
     radius = 148;
     color = '#ff9e44';
   }
+  if (inSmoke) radius = Math.round(radius * 0.5);
 
   state.ripples.push({
     x,
@@ -92,6 +89,70 @@ export function emitPlayerNoiseRipple(state, x, y, surface, crouching) {
   });
 
   return radius;
+}
+
+export function propagateSoundToGuards(state, x, y, radius, kind, onGuardInvestigate) {
+  if (radius <= 0) return null;
+
+  let chosenGuard = null;
+  let bestDist = Infinity;
+
+  for (const guard of state.guards) {
+    const hearMult = guard.hearingMultiplier || 1;
+    const effectiveRadius = radius * hearMult;
+    const dist = Math.hypot(guard.x - x, guard.y - y);
+    if (dist > effectiveRadius) continue;
+
+    if (kind === 'chime') {
+      if (guard.tier !== 'LOCKDOWN' && dist < bestDist) {
+        bestDist = dist;
+        chosenGuard = guard;
+      }
+    } else if (kind === 'player-step') {
+      if (guard.tier !== 'LOCKDOWN') {
+        onGuardInvestigate(guard, x, y, 'footstep');
+      }
+    }
+  }
+
+  if (kind === 'chime' && chosenGuard) {
+    onGuardInvestigate(chosenGuard, x, y, 'chime');
+    return chosenGuard;
+  }
+  return null;
+}
+
+export function updateActiveChime(state, dt, audio, onGuardInvestigate) {
+  const c = state.player.activeChime;
+  if (!c) return;
+  c.age += dt;
+  const t = Math.min(1, c.age / c.duration);
+  c.x = c.startX + (c.targetX - c.startX) * t;
+  c.y = c.startY + (c.targetY - c.startY) * t;
+  c.z = Math.sin(t * Math.PI) * 46;
+  if (t >= 1) {
+    const lureRadius = emitChimeDistraction(state, c.targetX, c.targetY);
+    propagateSoundToGuards(state, c.targetX, c.targetY, lureRadius, 'chime', onGuardInvestigate);
+    if (audio) audio.playBrassChime();
+    state.player.activeChime = null;
+  }
+}
+
+export function getChimeLandingPoint(player, aimWorld) {
+  const dx = aimWorld.x - player.x;
+  const dy = aimWorld.y - player.y;
+  const dist = Math.hypot(dx, dy);
+  const clamped = Math.min(dist, MAX_CHIME_RANGE);
+  if (dist < 1) {
+    return {
+      x: player.x + Math.cos(player.facing) * 140,
+      y: player.y + Math.sin(player.facing) * 140,
+    };
+  }
+  return {
+    x: Math.max(36, Math.min(1084, player.x + (dx / dist) * clamped)),
+    y: Math.max(36, Math.min(624, player.y + (dy / dist) * clamped)),
+  };
 }
 
 export function getSurfaceTypeAt(x, y, geometry) {
@@ -114,3 +175,5 @@ export function updateSoundRipples(state, dt) {
     }
   }
 }
+
+const MAX_CHIME_RANGE = 275;

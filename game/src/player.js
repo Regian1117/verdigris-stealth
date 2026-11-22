@@ -1,31 +1,54 @@
-// Infiltrator state, smooth cover-sliding movement, shadow-step dash, noise telemetry,
-// brass chime parabolic throw, and relic/lamp/sentry/exit interaction.
+// Infiltrator controller: Smoke Veil gadget deployment, cover-sliding movement, Shadow-Step dash,
+// smoke-muffled footsteps, and contextual [E] interactions for Keys, Loot, Relics, Lamps, and Exits.
 
-import { emitChimeDistraction, emitPlayerNoiseRipple, getSurfaceTypeAt, propagateSoundToGuards } from './acoustics.js';
+import {
+  emitPlayerNoiseRipple,
+  getSurfaceTypeAt,
+  propagateSoundToGuards,
+  updateActiveChime,
+} from './acoustics.js';
 import { toggleWallLamp } from './lighting.js';
-import { investigateSoundOrigin } from './guards.js';
+import { investigateSoundOrigin } from './patrol.js';
+import { collectObjectiveItem } from './state.js';
+import { computeVisionConePolygon } from './visibility.js';
 
-export function aimAndTossChime(state, targetWorld, audio) {
+export function deploySmokeVeil(state, audio) {
   const player = state.player;
-  if (player.chimes <= 0 || player.activeChime) return false;
-  const land = getChimeLandingPoint(player, targetWorld);
-  player.chimes -= 1;
-  state.chimesUsed = (state.chimesUsed || 0) + 1;
-  player.facing = Math.atan2(land.y - player.y, land.x - player.x);
-  player.noiseLevel = 'SOFT';
-  player.noiseTimer = 0.55;
-  player.activeChime = {
-    startX: player.x,
-    startY: player.y,
-    targetX: land.x,
-    targetY: land.y,
-    x: player.x,
-    y: player.y,
-    z: 0,
+  if (player.smokes <= 0) {
+    state.bannerText = 'NO SMOKE VEILS REMAINING';
+    state.bannerKind = 'warn';
+    state.bannerTimer = 1.8;
+    return false;
+  }
+  player.smokes -= 1;
+  state.smokesUsed = (state.smokesUsed || 0) + 1;
+
+  const cx = Math.max(44, Math.min(state.geometry.width - 44, player.x + Math.cos(player.facing) * 20));
+  const cy = Math.max(44, Math.min(state.geometry.height - 44, player.y + Math.sin(player.facing) * 20));
+
+  state.geometry.smokeClouds.push({
+    x: cx,
+    y: cy,
+    radius: 74,
+    currentRadius: 46,
     age: 0,
-    duration: 0.32,
-  };
-  if (audio) audio.playPlayerSurfaceStep('stone', true);
+    duration: 6.5,
+  });
+
+  // Immediately clip all guard & sentry vision cones against the new Smoke Veil cloud
+  for (const g of state.guards) {
+    g.visionPolygon = computeVisionConePolygon(g.x, g.y, g.facing, g.halfFov, g.range, state.geometry);
+  }
+  for (const sn of state.geometry.sentries || []) {
+    if (sn.active) {
+      sn.polygon = computeVisionConePolygon(sn.x, sn.y, sn.angle, sn.halfFov, sn.range, state.geometry);
+    }
+  }
+
+  state.bannerText = 'SMOKE VEIL DEPLOYED · VISION BLOCKED';
+  state.bannerKind = 'info';
+  state.bannerTimer = 2.4;
+  if (audio) audio.playSmokeDeploy();
   return true;
 }
 
@@ -56,10 +79,8 @@ export function updatePlayerMovement(state, input, dt, audio) {
   }
 
   if (input.consumePressed('Space') && player.dashCooldown <= 0) {
-    const dirX = moving ? mx : Math.cos(player.facing);
-    const dirY = moving ? my : Math.sin(player.facing);
-    player.dashDirX = dirX;
-    player.dashDirY = dirY;
+    player.dashDirX = moving ? mx : Math.cos(player.facing);
+    player.dashDirY = moving ? my : Math.sin(player.facing);
     player.dashTimer = 0.16;
     player.dashCooldown = 1.65;
   }
@@ -93,9 +114,18 @@ export function updatePlayerMovement(state, input, dt, audio) {
     const cadence = player.crouching ? 56 : 44;
     if (player.stepAccum >= cadence) {
       player.stepAccum %= cadence;
-      const noiseRadius = emitPlayerNoiseRipple(state, player.x, player.y, player.surface, player.crouching);
+      const noiseRadius = emitPlayerNoiseRipple(
+        state,
+        player.x,
+        player.y,
+        player.surface,
+        player.crouching,
+        player.inSmoke,
+      );
       if (noiseRadius > 0) {
-        player.noiseLevel = player.surface === 'gravel' || player.surface === 'timber' ? 'LOUD' : 'SOFT';
+        player.noiseLevel = !player.inSmoke && (player.surface === 'gravel' || player.surface === 'timber')
+          ? 'LOUD'
+          : 'SOFT';
         player.noiseTimer = 0.85;
       } else {
         player.noiseLevel = 'SILENT';
@@ -107,33 +137,35 @@ export function updatePlayerMovement(state, input, dt, audio) {
     }
   }
 
-  if (player.activeChime) {
-    const c = player.activeChime;
-    c.age += dt;
-    const t = Math.min(1, c.age / c.duration);
-    c.x = c.startX + (c.targetX - c.startX) * t;
-    c.y = c.startY + (c.targetY - c.startY) * t;
-    c.z = Math.sin(t * Math.PI) * 46;
-    if (t >= 1) {
-      const lureRadius = emitChimeDistraction(state, c.targetX, c.targetY);
-      propagateSoundToGuards(state, c.targetX, c.targetY, lureRadius, 'chime', investigateSoundOrigin);
-      if (audio) audio.playBrassChime();
-      player.activeChime = null;
-    }
-  }
+  updateActiveChime(state, dt, audio, investigateSoundOrigin);
 }
 
 export function interactWithNearbyObject(state, audio) {
   const target = findNearbyInteractable(state);
   if (!target) return false;
 
+  if (target.kind === 'key') {
+    if (collectObjectiveItem(state, 'key')) {
+      if (audio) audio.playLootChime();
+      return true;
+    }
+    return false;
+  }
+
+  if (target.kind === 'loot') {
+    if (collectObjectiveItem(state, 'loot', target.item)) {
+      if (audio) audio.playLootChime();
+      return true;
+    }
+    return false;
+  }
+
   if (target.kind === 'relic') {
-    state.player.hasRelic = true;
-    state.bannerText = `${state.level.relicName.toUpperCase()} SECURED · REACH EXIT UNSEEN`;
-    state.bannerKind = 'exit';
-    state.bannerTimer = 3.6;
-    if (audio) audio.playExtractionChord(false);
-    return true;
+    if (collectObjectiveItem(state, 'relic')) {
+      if (audio) audio.playExtractionChord(false);
+      return true;
+    }
+    return false;
   }
 
   if (target.kind === 'exit') {
@@ -184,9 +216,13 @@ export function createPlayerState(levelDef) {
     radius: 13,
     facing: levelDef.playerSpawn.facing || 0,
     crouching: false,
+    inSmoke: false,
+    hasKey: !levelDef.keyItem,
     hasRelic: false,
     chimes: levelDef.chimes ?? 3,
     maxChimes: levelDef.chimes ?? 3,
+    smokes: levelDef.smokes ?? 2,
+    maxSmokes: levelDef.smokes ?? 2,
     dashTimer: 0,
     dashCooldown: 0,
     dashDirX: 0,
@@ -205,16 +241,31 @@ export function findNearbyInteractable(state) {
   const player = state.player;
   const level = state.level;
 
+  if (level.keyItem && !player.hasKey) {
+    const dKey = Math.hypot(player.x - level.keyItem.x, player.y - level.keyItem.y);
+    if (dKey <= 54) {
+      return { kind: 'key', x: level.keyItem.x, y: level.keyItem.y, label: 'TAKE KEY' };
+    }
+  }
+
+  for (const item of state.treasures || []) {
+    if (item.collected) continue;
+    if (Math.hypot(player.x - item.x, player.y - item.y) <= 50) {
+      return { kind: 'loot', item, x: item.x, y: item.y, label: 'TAKE LOOT' };
+    }
+  }
+
   if (!player.hasRelic) {
     const dRelic = Math.hypot(player.x - level.relic.x, player.y - level.relic.y);
-    if (dRelic <= 52) {
-      return { kind: 'relic', x: level.relic.x, y: level.relic.y, label: `STEAL ${level.relicName.toUpperCase()}` };
+    if (dRelic <= 56) {
+      const label = level.keyItem && !player.hasKey ? 'LOCKED · NEED KEY' : 'STEAL RELIC';
+      return { kind: 'relic', x: level.relic.x, y: level.relic.y, label };
     }
   }
 
   if (player.hasRelic) {
     const dExit = Math.hypot(player.x - level.exit.x, player.y - level.exit.y);
-    if (dExit <= level.exit.radius + 24) {
+    if (dExit <= level.exit.radius + 26) {
       return { kind: 'exit', x: level.exit.x, y: level.exit.y, label: 'EXTRACT UNSEEN' };
     }
   }
@@ -236,7 +287,7 @@ export function findNearbyInteractable(state) {
       light: bestLamp,
       x: bestLamp.x,
       y: bestLamp.y,
-      label: hasSentry ? 'SNUFF SCONCE & SENTRY' : 'SNUFF LAMP',
+      label: hasSentry ? 'SNUFF SCONCE' : 'SNUFF LAMP',
     };
   }
 
@@ -250,25 +301,6 @@ export function findNearbyInteractable(state) {
 
   return null;
 }
-
-export function getChimeLandingPoint(player, aimWorld) {
-  const dx = aimWorld.x - player.x;
-  const dy = aimWorld.y - player.y;
-  const dist = Math.hypot(dx, dy);
-  const clamped = Math.min(dist, MAX_CHIME_RANGE);
-  if (dist < 1) {
-    return {
-      x: player.x + Math.cos(player.facing) * 140,
-      y: player.y + Math.sin(player.facing) * 140,
-    };
-  }
-  return {
-    x: Math.max(36, Math.min(1084, player.x + (dx / dist) * clamped)),
-    y: Math.max(36, Math.min(624, player.y + (dy / dist) * clamped)),
-  };
-}
-
-const MAX_CHIME_RANGE = 275;
 
 function resolvePlayerObstacles(player, obstacles) {
   for (let i = 0; i < obstacles.length; i++) {

@@ -1,7 +1,10 @@
-// Level geometry constructor and stage lookup for VERDIGRIS: builds perimeter walls,
-// raycast occluder segments/corners, snuffable lamps, and rotating brass sentry lanterns.
+// Level geometry constructor and stage lookup for VERDIGRIS: world bounds, perimeter walls,
+// raycast occluder segments/corners, snuffable lamps, rotating brass sentries, and active smoke clouds.
 
-import { CAMPAIGN_LEVEL_DATA, WORLD_HEIGHT, WORLD_WIDTH } from './level-data.js';
+import { CAMPAIGN_LEVEL_DATA } from './level-data.js';
+
+export const WORLD_WIDTH = 1120;
+export const WORLD_HEIGHT = 660;
 
 export function buildLevelGeometry(levelDef) {
   const perimeter = [
@@ -66,6 +69,7 @@ export function buildLevelGeometry(levelDef) {
       snuffSmoke: 0,
       polygon: null,
     })),
+    smokeClouds: [],
   };
 }
 
@@ -74,6 +78,6 @@ export function getLevelDefinition(levelNumber) {
   return CAMPAIGN_LEVEL_DATA[idx];
 }
 
-export { CAMPAIGN_LEVEL_DATA as CAMPAIGN_LEVELS, WORLD_WIDTH, WORLD_HEIGHT };
+export { CAMPAIGN_LEVEL_DATA as CAMPAIGN_LEVELS };
 
 const WALL_T = 24;

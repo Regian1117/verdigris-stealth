@@ -1,14 +1,26 @@
-// Dynamic raycast light pools, rotating brass sentry lanterns, shadow concealment,
-// and interactive wall lamp snuffing with linked sentry shutoff.
+// Dynamic raycast light pools, rotating brass sentry lanterns, Smoke Veil concealment,
+// shadow profile calculation, and interactive wall lamp snuffing with linked sentry shutoff.
 
 import {
   computeLightShadowPolygon,
   computeVisionConePolygon,
   hasLineOfSight,
+  isPointInSmokeCloud,
   isPointInVisionCone,
 } from './visibility.js';
 
 export function updateDynamicLights(geometry, dt, time) {
+  // Advance active Smoke Veil clouds before computing sentry cones so beams clip cleanly
+  const clouds = geometry.smokeClouds || [];
+  for (let i = clouds.length - 1; i >= 0; i--) {
+    const sc = clouds[i];
+    sc.age += dt;
+    const expand = Math.min(1, sc.age / 0.28);
+    const fadeOut = sc.age > sc.duration - 0.85 ? Math.max(0.25, (sc.duration - sc.age) / 0.85) : 1;
+    sc.currentRadius = sc.radius * (0.45 + 0.55 * expand) * fadeOut;
+    if (sc.age >= sc.duration) clouds.splice(i, 1);
+  }
+
   for (const light of geometry.lights) {
     if (!light.polygon) {
       light.polygon = computeLightShadowPolygon(light.x, light.y, light.radius, geometry);
@@ -45,7 +57,6 @@ export function toggleWallLamp(light, geometry) {
   light.lit = false;
   light.snuffSmoke = 1.0;
 
-  // Disable any rotating wall sentry linked to this sconce switch
   if (geometry && geometry.sentries) {
     for (const sentry of geometry.sentries) {
       if (sentry.active && sentry.linkedLightId === light.id) {
@@ -59,9 +70,10 @@ export function toggleWallLamp(light, geometry) {
 }
 
 export function computePlayerVisibility(player, geometry) {
-  const lightLevel = getIlluminationAtPoint(player.x, player.y, geometry);
-  const inSentryBeam = isPointInSentryBeam(player.x, player.y, geometry);
-  const inShadow = !inSentryBeam && lightLevel < 0.24;
+  const inSmoke = isPointInSmokeCloud(player.x, player.y, geometry.smokeClouds);
+  const lightLevel = inSmoke ? 0.04 : getIlluminationAtPoint(player.x, player.y, geometry);
+  const inSentryBeam = !inSmoke && isPointInSentryBeam(player.x, player.y, geometry);
+  const inShadow = inSmoke || (!inSentryBeam && lightLevel < 0.24);
 
   let nearCover = false;
   for (const obs of geometry.sightObstacles) {
@@ -78,15 +90,18 @@ export function computePlayerVisibility(player, geometry) {
   if (inSentryBeam) profile = 1.25;
   if (player.crouching) profile *= 0.62;
   if (nearCover && inShadow) profile *= 0.68;
+  if (inSmoke) profile *= 0.45;
   if (player.dashTimer > 0) profile *= 0.5;
 
-  const visibilityFactor = Math.max(0.14, Math.min(1.25, profile));
-  const hidden = inShadow && (player.crouching || nearCover || lightLevel < 0.08);
-  const label = inSentryBeam ? 'EXPOSED' : hidden ? 'SHADOW' : 'LIT';
+  const visibilityFactor = Math.max(0.12, Math.min(1.25, profile));
+  const hidden = inSmoke || (inShadow && (player.crouching || nearCover || lightLevel < 0.08));
+  const label = inSmoke ? 'SMOKE' : inSentryBeam ? 'EXPOSED' : hidden ? 'SHADOW' : 'LIT';
+  player.inSmoke = inSmoke;
 
   return {
     lightLevel,
     inShadow,
+    inSmoke,
     inSentryBeam,
     nearCover,
     hidden,
@@ -126,5 +141,5 @@ export function isPointInSentryBeam(px, py, geometry) {
 }
 
 export function isPointInSafeShadow(px, py, geometry) {
-  return getIlluminationAtPoint(px, py, geometry) < 0.24;
+  return isPointInSmokeCloud(px, py, geometry.smokeClouds) || getIlluminationAtPoint(px, py, geometry) < 0.24;
 }

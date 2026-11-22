@@ -4,17 +4,18 @@
 [![rank](https://make.fun/badge/best-stealth-game-20261121-1759/Regian1117/verdigris-stealth/rank.svg)](https://make.fun/bounty/best-stealth-game-20261121-1759/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-stealth-game-20261121-1759)
 [![reward](https://make.fun/badge/best-stealth-game-20261121-1759/Regian1117/verdigris-stealth/reward.svg)](https://make.fun/bounty/best-stealth-game-20261121-1759/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-stealth-game-20261121-1759)
 
-**VERDIGRIS** is an original 2.5D top-down architectural stealth heist set across five handcrafted nocturnal courtyards—*The Limestone Cloister*, *The Copper Conservatory*, *The Crimson Archive*, *The Moonlit Canal Lock*, and *The Grand Bellfoundry*. Runs 100% offline with zero external dependencies, true 2D raycast cover-occluded lighting and vision cones, hatched shadow blind zones, reactive 3-state Warden patrols with fair suspicion cooldown, visible and spatialized Web Audio footsteps, snuffable wall lamps, and parabolic Brass Chime distractions.
+**VERDIGRIS** is an original 2.5D top-down architectural stealth heist set across five handcrafted nocturnal courtyards—*The Limestone Cloister*, *The Copper Conservatory*, *The Crimson Archive*, *The Moonlit Canal Lock*, and *The Grand Bellfoundry*. Runs 100% offline with zero external dependencies, true 2D raycast cover- and Smoke-Veil-occluded lighting and vision cones, hatched shadow blind zones, a 4-tier segmented detection ladder (`QUIET -> WARY -> SEARCH -> LOCKDOWN`), Acute Listener wardens, snuffable wall sconces, Keys & optional Treasures, parabolic Brass Chime distractions, and procedural Web Audio.
 
 ## Controls
 
 - **WASD / Arrow Keys**: Move
 - **Shift**: Crouch / silent tiptoe (reduces visibility profile in shadow)
 - **Space**: Shadow-Step silent dash between cover
+- **F / Right-Click**: Deploy **Smoke Veil** (blocks raycasted guard vision cones & rotating sentry beams, muffles footsteps)
 - **Mouse Aim + Left Click** (or **Q**): Toss Brass Chime distraction along live dotted arc
-- **E**: Steal Relic / Snuff wall lamp to carve dark corridors / Extract at exit gate
+- **E**: Take Key / Steal Relic / Take Optional Loot / Snuff wall lamp / Extract at exit gate
 - **Tab**: Toggle full patrol telemetry overlay
-- **1–5**: Switch campaign stages · **R**: Quick retry · **M**: Mute/unmute procedural audio · **Esc**: Mission Select
+- **1–5**: Switch campaign stages · **Double-tap R**: Safe retry · **M**: Mute/unmute procedural audio · **Esc**: Mission Select
 
 ## Run it
 

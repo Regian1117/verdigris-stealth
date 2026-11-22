@@ -1,12 +1,15 @@
-// Unified keyboard and mouse input controller with canvas-to-world coordinate projection.
+// Unified keyboard and mouse input controller with Chrome-safe Tab/Space/Arrow preventDefault,
+// canvas right-click Smoke Veil support, and canvas-to-world coordinate projection.
 
 export function bindKeyboardAndMouse(canvas, input, getViewport, onImmediateAction) {
-  const preventKeys = new Set([
+  const preventCodes = new Set([
     'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab',
   ]);
 
   function onKeyDown(e) {
-    if (preventKeys.has(e.code)) e.preventDefault();
+    if (preventCodes.has(e.code) || e.key === 'Tab' || e.key === ' ') {
+      e.preventDefault();
+    }
     if (!input.keys[e.code]) {
       input.press(e.code);
       if (onImmediateAction) onImmediateAction('key', e.code);
@@ -15,6 +18,7 @@ export function bindKeyboardAndMouse(canvas, input, getViewport, onImmediateActi
   }
 
   function onKeyUp(e) {
+    if (preventCodes.has(e.code) || e.key === 'Tab') e.preventDefault();
     input.keys[e.code] = false;
   }
 
@@ -38,22 +42,33 @@ export function bindKeyboardAndMouse(canvas, input, getViewport, onImmediateActi
   }
 
   function onMouseDown(e) {
-    if (e.button !== 0) return;
     updatePointer(e);
-    input.pendingClick = {
+    const payload = {
       canvasX: input.mouseCanvas.x,
       canvasY: input.mouseCanvas.y,
       worldX: input.mouseWorld.x,
       worldY: input.mouseWorld.y,
     };
-    if (onImmediateAction) onImmediateAction('click', input.pendingClick);
+    if (e.button === 2) {
+      e.preventDefault();
+      if (onImmediateAction) onImmediateAction('rightclick', payload);
+      return;
+    }
+    if (e.button !== 0) return;
+    input.pendingClick = payload;
+    if (onImmediateAction) onImmediateAction('click', payload);
   }
 
-  window.addEventListener('keydown', onKeyDown);
+  function onContextMenu(e) {
+    e.preventDefault();
+  }
+
+  window.addEventListener('keydown', onKeyDown, { passive: false });
   window.addEventListener('keyup', onKeyUp);
   window.addEventListener('blur', onBlur);
   canvas.addEventListener('mousemove', updatePointer);
   canvas.addEventListener('mousedown', onMouseDown);
+  canvas.addEventListener('contextmenu', onContextMenu);
 
   return () => {
     window.removeEventListener('keydown', onKeyDown);
@@ -61,6 +76,7 @@ export function bindKeyboardAndMouse(canvas, input, getViewport, onImmediateActi
     window.removeEventListener('blur', onBlur);
     canvas.removeEventListener('mousemove', updatePointer);
     canvas.removeEventListener('mousedown', onMouseDown);
+    canvas.removeEventListener('contextmenu', onContextMenu);
   };
 }
 

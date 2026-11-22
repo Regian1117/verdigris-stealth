@@ -1,13 +1,14 @@
-// Exact 2D raycast visibility engine for cover-occluded guard vision cones,
+// Exact 2D raycast visibility engine for cover- and Smoke-Veil-occluded guard vision cones,
 // rotating brass sentry beams, dynamic light shadow polygons, and line-of-sight checks.
 
 export function computeVisionConePolygon(ox, oy, facing, halfFov, range, geometry) {
   const segments = geometry.occluderSegments;
   const corners = geometry.occluderCorners;
+  const smokeClouds = geometry.smokeClouds || [];
   const rangePad = range + 12;
   const offsets = [];
 
-  const arcSteps = 26;
+  const arcSteps = 28;
   for (let i = 0; i <= arcSteps; i++) {
     offsets.push(-halfFov + (i / arcSteps) * (halfFov * 2));
   }
@@ -23,6 +24,28 @@ export function computeVisionConePolygon(ox, oy, facing, halfFov, range, geometr
     }
   }
 
+  // Add dense tangent & silhouette sample rays for active Smoke Veil circles so cones slice cleanly
+  for (let i = 0; i < smokeClouds.length; i++) {
+    const sc = smokeClouds[i];
+    const r = sc.currentRadius || sc.radius;
+    const dx = sc.x - ox;
+    const dy = sc.y - oy;
+    const dist = Math.hypot(dx, dy);
+    if (dist - r > rangePad) continue;
+    const centerDelta = normalizeAngle(Math.atan2(dy, dx) - facing);
+    const spread = dist <= r + 1 ? halfFov : Math.asin(Math.min(0.995, r / dist));
+    const samples = 14;
+    for (let k = 0; k <= samples; k++) {
+      const off = centerDelta - spread + (k / samples) * spread * 2;
+      if (off > -halfFov && off < halfFov) offsets.push(off);
+    }
+    for (const edge of [centerDelta - spread, centerDelta + spread]) {
+      if (edge > -halfFov && edge < halfFov) {
+        offsets.push(edge - RAY_EPS, edge, edge + RAY_EPS);
+      }
+    }
+  }
+
   offsets.sort((a, b) => a - b);
 
   const pts = [{ x: ox, y: oy }];
@@ -31,13 +54,13 @@ export function computeVisionConePolygon(ox, oy, facing, halfFov, range, geometr
     const off = Math.max(-halfFov, Math.min(halfFov, offsets[i]));
     if (off - lastOffset < 1e-5) continue;
     lastOffset = off;
-    const hit = castRay(ox, oy, facing + off, range, segments);
+    const hit = castRay(ox, oy, facing + off, range, segments, smokeClouds);
     pts.push({ x: hit.x, y: hit.y, dist: hit.dist, hitCover: hit.dist < range - 1 });
   }
   return pts;
 }
 
-export function hasLineOfSight(ax, ay, bx, by, segments) {
+export function hasLineOfSight(ax, ay, bx, by, segments, smokeClouds = null) {
   const vx = bx - ax;
   const vy = by - ay;
   const dist = Math.hypot(vx, vy);
@@ -48,6 +71,13 @@ export function hasLineOfSight(ax, ay, bx, by, segments) {
   for (let i = 0; i < segments.length; i++) {
     const hit = intersectRaySegment(ax, ay, dx, dy, limit, segments[i]);
     if (hit < limit) return false;
+  }
+  if (smokeClouds && smokeClouds.length > 0) {
+    for (let i = 0; i < smokeClouds.length; i++) {
+      const sc = smokeClouds[i];
+      const hit = intersectRayCircle(ax, ay, dx, dy, limit, sc.x, sc.y, sc.currentRadius || sc.radius);
+      if (hit < limit) return false;
+    }
   }
   return true;
 }
@@ -80,7 +110,7 @@ export function computeLightShadowPolygon(ox, oy, radius, geometry) {
     const a = angles[i];
     if (a - lastA < 1e-5) continue;
     lastA = a;
-    const hit = castRay(ox, oy, a, radius, segments);
+    const hit = castRay(ox, oy, a, radius, segments, null);
     pts.push({ x: hit.x, y: hit.y });
   }
   return pts;
@@ -96,12 +126,29 @@ export function isPointInVisionCone(px, py, ox, oy, facing, halfFov, range, geom
   const delta = Math.abs(normalizeAngle(Math.atan2(dy, dx) - facing));
   if (delta > halfFov) return { visible: false, dist, angleRatio: delta / halfFov };
 
-  const clear = hasLineOfSight(ox, oy, px, py, geometry.occluderSegments);
+  const smokeClouds = geometry.smokeClouds || [];
+  if (isPointInSmokeCloud(px, py, smokeClouds)) {
+    return { visible: false, dist, angleRatio: delta / halfFov };
+  }
+
+  const clear = hasLineOfSight(ox, oy, px, py, geometry.occluderSegments, smokeClouds);
   return {
     visible: clear,
     dist,
     angleRatio: delta / halfFov,
   };
+}
+
+export function isPointInSmokeCloud(px, py, smokeClouds) {
+  if (!smokeClouds || smokeClouds.length === 0) return false;
+  for (let i = 0; i < smokeClouds.length; i++) {
+    const sc = smokeClouds[i];
+    const r = sc.currentRadius || sc.radius;
+    const dx = px - sc.x;
+    const dy = py - sc.y;
+    if (dx * dx + dy * dy <= r * r) return true;
+  }
+  return false;
 }
 
 export function normalizeAngle(angle) {
@@ -130,13 +177,33 @@ function intersectRaySegment(ox, oy, dx, dy, maxDist, seg) {
   return t;
 }
 
-function castRay(ox, oy, angle, maxDist, segments) {
+function intersectRayCircle(ox, oy, dx, dy, maxDist, cx, cy, r) {
+  const fx = ox - cx;
+  const fy = oy - cy;
+  const c = fx * fx + fy * fy - r * r;
+  if (c <= 0) return Math.min(maxDist, 18);
+  const b = fx * dx + fy * dy;
+  if (b > 0) return maxDist;
+  const disc = b * b - c;
+  if (disc < 0) return maxDist;
+  const t = -b - Math.sqrt(disc);
+  return t >= 0 && t < maxDist ? t : maxDist;
+}
+
+function castRay(ox, oy, angle, maxDist, segments, smokeClouds) {
   const dx = Math.cos(angle);
   const dy = Math.sin(angle);
   let best = maxDist;
   for (let i = 0; i < segments.length; i++) {
     const hit = intersectRaySegment(ox, oy, dx, dy, best, segments[i]);
     if (hit < best) best = hit;
+  }
+  if (smokeClouds && smokeClouds.length > 0) {
+    for (let i = 0; i < smokeClouds.length; i++) {
+      const sc = smokeClouds[i];
+      const hit = intersectRayCircle(ox, oy, dx, dy, best, sc.x, sc.y, sc.currentRadius || sc.radius);
+      if (hit < best) best = hit;
+    }
   }
   return {
     x: ox + dx * best,
