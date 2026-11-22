@@ -1,7 +1,7 @@
 // Canonical VERDIGRIS game state transitions: 4-tier global detection ladder, near-miss tracking,
 // Key/Relic/Loot progression, restart-arm guard, and Ghost/Phantom heist scoring.
 
-export const DETECTION_TIERS = ['QUIET', 'WARY', 'SEARCH', 'LOCKDOWN'];
+export const DETECTION_TIERS = Object.freeze(['QUIET', 'WARY', 'SEARCH', 'LOCKDOWN']);
 
 export function createGameState(level, geometry, player, guards, playerVisibility, options = {}) {
   const treasures = (level.treasures || []).map((t) => ({ ...t, collected: false }));
@@ -15,9 +15,11 @@ export function createGameState(level, geometry, player, guards, playerVisibilit
     guards,
     treasures,
     ripples: [],
+    alertLinks: [],
     detectionTier: 'QUIET',
     detectionTierIndex: 0,
     maxSuspicion: 0,
+    isCooling: false,
     time: 1.2,
     elapsed: 0,
     lampsSnuffed: 0,
@@ -35,6 +37,7 @@ export function createGameState(level, geometry, player, guards, playerVisibilit
     bannerKind: 'info',
     bannerTimer: 0,
     caughtBy: null,
+    caughtTier: null,
     shotMode: false,
     lastRunSummary: options.lastRunSummary || null,
     completedStages: options.completedStages || new Set(),
@@ -101,12 +104,17 @@ export function collectObjectiveItem(state, kind, item = null) {
 export function syncGlobalDetectionTier(state) {
   let maxSusp = 0;
   let bestTierIdx = 0;
+  let anyRecovering = false;
+  let anySeeing = false;
   for (const g of state.guards) {
     if (g.suspicion > maxSusp) maxSusp = g.suspicion;
     const idx = Math.max(0, DETECTION_TIERS.indexOf(g.tier || 'QUIET'));
     if (idx > bestTierIdx) bestTierIdx = idx;
+    if (g.recovering && g.suspicion > 0.02) anyRecovering = true;
+    if (g.seesPlayer) anySeeing = true;
   }
   state.maxSuspicion = maxSusp;
+  state.isCooling = anyRecovering && !anySeeing;
   return setDetectionTier(state, DETECTION_TIERS[bestTierIdx]);
 }
 

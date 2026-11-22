@@ -1,8 +1,9 @@
-// Warden patrol AI & archetype builder: learnable waypoint loops, Acute Listener hearing trim,
-// acoustic lure pursuit, and sweeping last-known search behavior with floor countdown timer.
+// Warden patrol AI & archetype builder: learnable waypoint loops, A* corner-clearing pursuit,
+// Acute Listener hearing trim, acoustic lure response, and sweeping last-known search behavior.
 
 import { computeVisionConePolygon, normalizeAngle } from './visibility.js';
 import { emitGuardFootstepRipple } from './acoustics.js';
+import { computeAStarPath } from './pathfinding.js';
 
 export function updateGuardPatrol(state, guard, dt, audio) {
   const geometry = state.geometry;
@@ -12,7 +13,7 @@ export function updateGuardPatrol(state, guard, dt, audio) {
     const target = guard.lastKnown;
     if (target) {
       const speedMult = guard.tier === 'LOCKDOWN' ? 1.32 : 1.12;
-      const arrived = moveTowardPoint(guard, target.x, target.y, guard.baseSpeed * speedMult, dt, geometry);
+      const arrived = followAStarToTarget(guard, target, guard.baseSpeed * speedMult, dt, geometry);
       if (arrived) {
         if (guard.tier === 'LOCKDOWN') guard.tier = 'SEARCH';
         advanceSearchSweep(guard, dt);
@@ -22,14 +23,7 @@ export function updateGuardPatrol(state, guard, dt, audio) {
       guard.recovering = true;
     }
   } else if (guard.investigateTarget) {
-    const arrived = moveTowardPoint(
-      guard,
-      guard.investigateTarget.x,
-      guard.investigateTarget.y,
-      guard.baseSpeed * 1.06,
-      dt,
-      geometry,
-    );
+    const arrived = followAStarToTarget(guard, guard.investigateTarget, guard.baseSpeed * 1.06, dt, geometry);
     if (arrived) {
       advanceSearchSweep(guard, dt);
     }
@@ -37,6 +31,7 @@ export function updateGuardPatrol(state, guard, dt, audio) {
     const angle = Math.atan2(guard.lastKnown.y - guard.y, guard.lastKnown.x - guard.x);
     guard.facing = turnToward(guard.facing, angle, dt * 4.4);
   } else {
+    guard.navPath = null;
     const wp = guard.waypoints[guard.waypointIdx];
     if (guard.waitTimer > 0) {
       guard.waitTimer -= dt;
@@ -73,6 +68,7 @@ export function advanceSearchSweep(guard, dt) {
   if (guard.searchTimer <= 0) {
     guard.investigateTarget = null;
     guard.investigateKind = null;
+    guard.navPath = null;
     guard.recovering = true;
     if (guard.tier === 'SEARCH') {
       guard.tier = 'WARY';
@@ -133,18 +129,39 @@ export function assignGuardArchetypes(levelDef, geometry) {
 
 export function investigateSoundOrigin(guard, x, y, kind) {
   if (guard.tier === 'LOCKDOWN') return;
-  const dur = kind === 'chime' ? 4.4 : 3.0;
+  const isChime = kind === 'chime' || kind === 'smoke-chime';
+  const dur = isChime ? 4.4 : 3.0;
   guard.investigateTarget = { x, y };
-  guard.investigateKind = kind;
+  guard.investigateKind = isChime ? 'chime' : kind;
   guard.lastKnown = { x, y };
+  guard.navPath = null;
   guard.searchTimer = dur;
   guard.searchMaxTime = dur;
   guard.recovering = false;
-  guard.callout = kind === 'chime' ? 'HEARD CHIME' : 'WHAT WAS THAT?';
+  guard.callout = isChime ? 'HEARD CHIME' : 'WHAT WAS THAT?';
   if (guard.tier === 'QUIET' || guard.tier === 'WARY') {
     guard.tier = 'WARY';
-    guard.suspicion = Math.max(guard.suspicion, kind === 'chime' ? 0.40 : 0.34);
+    const floorSusp = kind === 'smoke-chime' ? 0.30 : isChime ? 0.40 : 0.34;
+    guard.suspicion = kind === 'smoke-chime' ? Math.min(0.32, Math.max(guard.suspicion, floorSusp)) : Math.max(guard.suspicion, floorSusp);
   }
+}
+
+function followAStarToTarget(guard, target, speed, dt, geometry) {
+  const key = `${Math.round(target.x / 20)},${Math.round(target.y / 20)}`;
+  if (!guard.navPath || guard.navPathKey !== key) {
+    guard.navPath = computeAStarPath(geometry.navGrid, guard.x, guard.y, target.x, target.y);
+    guard.navPathKey = key;
+  }
+  while (guard.navPath.length > 1 && Math.hypot(guard.navPath[0].x - guard.x, guard.navPath[0].y - guard.y) < 12) {
+    guard.navPath.shift();
+  }
+  const wp = guard.navPath[0] || target;
+  const reached = moveTowardPoint(guard, wp.x, wp.y, speed, dt, geometry);
+  if (reached && guard.navPath.length > 1) {
+    guard.navPath.shift();
+    return false;
+  }
+  return reached && guard.navPath.length <= 1;
 }
 
 function resolveCircleObstacles(entity, obstacles) {

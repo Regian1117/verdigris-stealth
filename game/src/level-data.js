@@ -63,7 +63,7 @@ export const CAMPAIGN_LEVEL_DATA = [
     exit: { x: 1016, y: 112, radius: 34 },
     treasures: [
       { id: 't2-1', x: 242, y: 540, value: 150, name: 'Orchid Vial' },
-      { id: 't2-2', x: 560, y: 584, value: 150, name: 'Amber Specimen' },
+      { id: 't2-2', x: 560, y: 540, value: 150, name: 'Amber Specimen' },
       { id: 't2-3', x: 966, y: 492, value: 200, name: 'Brass Compass' },
     ],
     surfaces: [
@@ -72,14 +72,14 @@ export const CAMPAIGN_LEVEL_DATA = [
       { x: 472, y: 248, w: 176, h: 164, type: 'rug', color: '#143937', trim: '#d6b46b' },
     ],
     obstacles: [
-      { x: 204, y: 210, w: 76, h: 76, kind: 'copperPillar', height: 15 },
-      { x: 204, y: 392, w: 76, h: 76, kind: 'copperPillar', height: 15 },
-      { x: 382, y: 184, w: 66, h: 112, kind: 'copperWall', height: 15 },
-      { x: 382, y: 364, w: 66, h: 112, kind: 'copperWall', height: 15 },
-      { x: 672, y: 184, w: 66, h: 112, kind: 'copperWall', height: 15 },
-      { x: 672, y: 364, w: 66, h: 112, kind: 'copperWall', height: 15 },
-      { x: 840, y: 210, w: 76, h: 76, kind: 'copperPillar', height: 15 },
-      { x: 840, y: 392, w: 76, h: 76, kind: 'copperPillar', height: 15 },
+      { x: 184, y: 214, w: 112, h: 46, kind: 'stoneBench', height: 11 },
+      { x: 204, y: 404, w: 72, h: 72, kind: 'bronzePlinth', height: 16 },
+      { x: 382, y: 176, w: 62, h: 124, kind: 'fernPlanter', height: 15 },
+      { x: 374, y: 392, w: 78, h: 74, kind: 'bronzePlinth', height: 16 },
+      { x: 676, y: 186, w: 76, h: 76, kind: 'bronzePlinth', height: 16 },
+      { x: 674, y: 356, w: 64, h: 126, kind: 'fernPlanter', height: 15 },
+      { x: 832, y: 218, w: 108, h: 46, kind: 'stoneBench', height: 11 },
+      { x: 846, y: 396, w: 74, h: 74, kind: 'fernPlanter', height: 15 },
     ],
     lights: [
       { id: 'l2-a', x: 242, y: 340, radius: 190, snuffable: true, lit: true, kind: 'sconce' },

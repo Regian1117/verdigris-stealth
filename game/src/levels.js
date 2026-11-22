@@ -2,6 +2,7 @@
 // raycast occluder segments/corners, snuffable lamps, rotating brass sentries, and active smoke clouds.
 
 import { CAMPAIGN_LEVEL_DATA } from './level-data.js';
+import { buildWalkableGrid } from './pathfinding.js';
 
 export const WORLD_WIDTH = 1120;
 export const WORLD_HEIGHT = 660;
@@ -47,7 +48,7 @@ export function buildLevelGeometry(levelDef) {
     }
   }
 
-  return {
+  const geometry = {
     width: WORLD_WIDTH,
     height: WORLD_HEIGHT,
     wallThickness: WALL_T,
@@ -70,7 +71,10 @@ export function buildLevelGeometry(levelDef) {
       polygon: null,
     })),
     smokeClouds: [],
+    navGrid: null,
   };
+  geometry.navGrid = buildWalkableGrid(geometry, 40);
+  return geometry;
 }
 
 export function getLevelDefinition(levelNumber) {

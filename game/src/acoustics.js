@@ -1,5 +1,7 @@
-// Full acoustic stealth & Brass Chime lifecycle: parabolic chime throw, acoustic ripple pulses,
-// surface-aware & smoke-muffled footsteps, and Acute Listener hearing propagation.
+// Full acoustic stealth & Brass Chime lifecycle: parabolic chime throw, Smoke-Masked Chime combo,
+// acoustic ripple pulses, surface-aware footsteps, and Acute Listener hearing propagation.
+
+import { isPointInSmokeCloud } from './visibility.js';
 
 export function aimAndTossChime(state, targetWorld, audio) {
   const player = state.player;
@@ -25,8 +27,9 @@ export function aimAndTossChime(state, targetWorld, audio) {
   return true;
 }
 
-export function emitChimeDistraction(state, x, y) {
-  const lureRadius = 315;
+export function emitChimeDistraction(state, x, y, smokeMasked = false) {
+  const masked = smokeMasked || isPointInSmokeCloud(x, y, state.geometry?.smokeClouds);
+  const lureRadius = masked ? 275 : 315;
   state.ripples.push({
     x,
     y,
@@ -35,12 +38,14 @@ export function emitChimeDistraction(state, x, y) {
     age: 0,
     duration: 1.45,
     kind: 'chime',
-    color: '#7df9e2',
-    accent: '#ffe082',
+    masked,
+    label: masked ? 'SMOKE-MASKED CHIME' : 'CHIME',
+    color: masked ? '#9cfcf0' : '#7df9e2',
+    accent: masked ? '#d2fff8' : '#ffe082',
     throughWalls: true,
     rings: 3,
   });
-  return lureRadius;
+  return { lureRadius, masked };
 }
 
 export function emitGuardFootstepRipple(state, guard) {
@@ -103,7 +108,7 @@ export function propagateSoundToGuards(state, x, y, radius, kind, onGuardInvesti
     const dist = Math.hypot(guard.x - x, guard.y - y);
     if (dist > effectiveRadius) continue;
 
-    if (kind === 'chime') {
+    if (kind === 'chime' || kind === 'smoke-chime') {
       if (guard.tier !== 'LOCKDOWN' && dist < bestDist) {
         bestDist = dist;
         chosenGuard = guard;
@@ -115,8 +120,8 @@ export function propagateSoundToGuards(state, x, y, radius, kind, onGuardInvesti
     }
   }
 
-  if (kind === 'chime' && chosenGuard) {
-    onGuardInvestigate(chosenGuard, x, y, 'chime');
+  if ((kind === 'chime' || kind === 'smoke-chime') && chosenGuard) {
+    onGuardInvestigate(chosenGuard, x, y, kind);
     return chosenGuard;
   }
   return null;
@@ -131,8 +136,13 @@ export function updateActiveChime(state, dt, audio, onGuardInvestigate) {
   c.y = c.startY + (c.targetY - c.startY) * t;
   c.z = Math.sin(t * Math.PI) * 46;
   if (t >= 1) {
-    const lureRadius = emitChimeDistraction(state, c.targetX, c.targetY);
-    propagateSoundToGuards(state, c.targetX, c.targetY, lureRadius, 'chime', onGuardInvestigate);
+    const { lureRadius, masked } = emitChimeDistraction(state, c.targetX, c.targetY);
+    propagateSoundToGuards(state, c.targetX, c.targetY, lureRadius, masked ? 'smoke-chime' : 'chime', onGuardInvestigate);
+    if (masked) {
+      state.bannerText = 'SMOKE-MASKED CHIME · LURE HIDDEN';
+      state.bannerKind = 'info';
+      state.bannerTimer = 2.4;
+    }
     if (audio) audio.playBrassChime();
     state.player.activeChime = null;
   }
@@ -172,6 +182,14 @@ export function updateSoundRipples(state, dt) {
     r.radius = 8 + (r.maxRadius - 8) * (1 - Math.pow(1 - progress, 2.2));
     if (r.age >= r.duration) {
       state.ripples.splice(i, 1);
+    }
+  }
+  if (state.alertLinks) {
+    for (let i = state.alertLinks.length - 1; i >= 0; i--) {
+      state.alertLinks[i].age += dt;
+      if (state.alertLinks[i].age >= state.alertLinks[i].duration) {
+        state.alertLinks.splice(i, 1);
+      }
     }
   }
 }

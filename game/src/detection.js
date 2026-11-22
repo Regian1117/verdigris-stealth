@@ -1,8 +1,9 @@
 // 4-tier segmented detection ladder (QUIET -> WARY -> SEARCH -> LOCKDOWN), Smoke Veil & cover
-// line-of-sight checks, rotating sentry spotting, and fair near-miss cooldown recovery.
+// line-of-sight checks, short-range alert propagation (! chain), and fair near-miss cooling.
 
 import { computeVisionConePolygon, isPointInVisionCone } from './visibility.js';
 import { recordNearMiss, syncGlobalDetectionTier } from './state.js';
+import { triggerCapture } from './game-flow.js';
 
 export function updateGuardDetection(state, guard, dt, audio) {
   const player = state.player;
@@ -28,6 +29,7 @@ export function updateGuardDetection(state, guard, dt, audio) {
 
   if (spotted) {
     guard.recovering = false;
+    guard.smokeCooled = false;
     guard.investigateTarget = null;
     guard.lastKnown = { x: player.x, y: player.y };
 
@@ -44,11 +46,13 @@ export function updateGuardDetection(state, guard, dt, audio) {
       transitionDetectionTier(state, guard, 'LOCKDOWN', audio);
       guard.exposedHold += dt;
       if (check.dist < 38 || guard.exposedHold >= 0.78) {
-        state.status = 'CAUGHT';
-        state.caughtBy = guard.id;
+        triggerCapture(state, guard);
       }
     } else if (guard.suspicion >= 0.55) {
       transitionDetectionTier(state, guard, 'SEARCH', audio);
+      if (guard.suspicion >= 0.65 && !guard.alertPulsed) {
+        propagateAlertPulse(state, guard, audio);
+      }
       guard.exposedHold = Math.max(0, guard.exposedHold - dt * 0.5);
     } else if (guard.suspicion >= 0.10) {
       transitionDetectionTier(state, guard, 'WARY', audio);
@@ -64,7 +68,7 @@ export function updateGuardDetection(state, guard, dt, audio) {
       if (!guard.recovering) {
         guard.recovering = true;
         if (vis.hidden || vis.nearCover || vis.inSmoke) {
-          state.bannerText = 'NEAR MISS · HIDE TO COOL';
+          state.bannerText = 'NEAR MISS · COOLING ▼';
           state.bannerKind = 'warn';
           state.bannerTimer = 2.6;
         }
@@ -75,7 +79,7 @@ export function updateGuardDetection(state, guard, dt, audio) {
     } else if (guard.tier === 'WARY') {
       if (!guard.investigateTarget) {
         if (!guard.recovering && guard.nearMissCandidate && (vis.hidden || vis.nearCover || vis.inSmoke)) {
-          state.bannerText = 'NEAR MISS · HIDE TO COOL';
+          state.bannerText = 'NEAR MISS · COOLING ▼';
           state.bannerKind = 'warn';
           state.bannerTimer = 2.6;
         }
@@ -96,6 +100,48 @@ export function updateGuardDetection(state, guard, dt, audio) {
     geometry,
   );
   syncGlobalDetectionTier(state);
+}
+
+export function propagateAlertPulse(state, sourceGuard, audio) {
+  sourceGuard.alertPulsed = true;
+  const earshot = 265;
+  state.ripples.push({
+    x: sourceGuard.x,
+    y: sourceGuard.y,
+    radius: 12,
+    maxRadius: earshot,
+    age: 0,
+    duration: 1.15,
+    kind: 'alert-pulse',
+    color: '#ff6438',
+    accent: '#ffba49',
+    throughWalls: true,
+    rings: 2,
+  });
+
+  let nudged = 0;
+  for (const g of state.guards) {
+    if (g === sourceGuard || g.tier === 'LOCKDOWN') continue;
+    if (Math.hypot(g.x - sourceGuard.x, g.y - sourceGuard.y) > earshot) continue;
+    if (g.tier === 'QUIET') {
+      g.tier = 'WARY';
+      g.suspicion = Math.max(g.suspicion, 0.36);
+      g.lastKnown = sourceGuard.lastKnown ? { ...sourceGuard.lastKnown } : { x: sourceGuard.x, y: sourceGuard.y };
+      g.callout = '! ALERTED';
+      g.recovering = false;
+      nudged += 1;
+    }
+    state.alertLinks.push({
+      fromX: sourceGuard.x,
+      fromY: sourceGuard.y,
+      toX: g.x,
+      toY: g.y,
+      age: 0,
+      duration: 1.7,
+    });
+  }
+  if (nudged > 0 && audio) audio.playSuspicionSting(false);
+  return nudged;
 }
 
 export function transitionDetectionTier(state, guard, nextTier, audio) {
@@ -126,7 +172,8 @@ export function transitionDetectionTier(state, guard, nextTier, audio) {
 
 export function decaySuspicionToCalm(guard, dt, state) {
   if (guard.seesPlayer) return;
-  const decayRate = guard.tier === 'SEARCH' ? 0.16 : 0.25;
+  const baseRate = guard.tier === 'SEARCH' ? 0.16 : 0.25;
+  const decayRate = guard.smokeCooled ? baseRate * 2.1 : baseRate;
   guard.suspicion = Math.max(0, guard.suspicion - dt * decayRate);
 
   if (guard.tier === 'SEARCH' && guard.suspicion < 0.50 && guard.searchTimer <= 0) {
@@ -140,11 +187,14 @@ export function decaySuspicionToCalm(guard, dt, state) {
     guard.suspicion = 0;
     guard.tier = 'QUIET';
     guard.recovering = false;
+    guard.smokeCooled = false;
+    guard.alertPulsed = false;
     guard.nearMissCandidate = false;
     guard.callout = '';
     guard.lastKnown = null;
     guard.investigateTarget = null;
     guard.investigateKind = null;
+    guard.navPath = null;
     guard.searchTimer = 0;
   }
 }
