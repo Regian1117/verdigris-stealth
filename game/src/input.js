@@ -1,53 +1,97 @@
-// Keyboard and pointer input. Held keys give a steering direction; one-shot presses (start or
-// restart, pause) are queued as bit flags and taken once by the loop, so a press between two
-// frames is never lost and never counted twice.
+// Unified keyboard and mouse input controller with canvas-to-world coordinate projection.
 
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
-
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
-
-export function createInput(target) {
-  let left = false;
-  let right = false;
-  let actions = 0;
-
-  window.addEventListener('keydown', (event) => {
-    if (LEFT.has(event.code)) left = true;
-    else if (RIGHT.has(event.code)) right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else return;
-    event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    if (LEFT.has(event.code)) left = false;
-    else if (RIGHT.has(event.code)) right = false;
-  });
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
-  window.addEventListener('blur', () => {
-    left = false;
-    right = false;
-  });
-  target.addEventListener('pointerdown', () => {
-    actions |= ACTION_CONFIRM;
-  });
-
+export function createInputState() {
+  const pressed = new Set();
   return {
-    /** -1 for left, 1 for right, 0 for neither or both. */
-    direction() {
-      return (right ? 1 : 0) - (left ? 1 : 0);
+    keys: Object.create(null),
+    mouseCanvas: { x: 640, y: 400 },
+    mouseWorld: { x: 560, y: 330 },
+    mouseInCanvas: false,
+    pendingClick: null,
+    press(code) {
+      pressed.add(code);
     },
-    /** The one-shot presses since the last call, as ACTION_* flags. */
-    takeActions() {
-      const taken = actions;
-      actions = 0;
-      return taken;
+    consumePressed(code) {
+      if (pressed.has(code)) {
+        pressed.delete(code);
+        return true;
+      }
+      return false;
     },
+    clearFrame() {
+      pressed.clear();
+      this.pendingClick = null;
+    },
+  };
+}
+
+export function screenToWorldCoords(canvasX, canvasY, viewport) {
+  return {
+    x: (canvasX - viewport.offsetX) / viewport.scale,
+    y: (canvasY - viewport.offsetY) / viewport.scale,
+  };
+}
+
+export function bindKeyboardAndMouse(canvas, input, getViewport, onImmediateAction) {
+  const preventKeys = new Set([
+    'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab',
+  ]);
+
+  function onKeyDown(e) {
+    if (preventKeys.has(e.code)) e.preventDefault();
+    if (!input.keys[e.code]) {
+      input.press(e.code);
+      if (onImmediateAction) onImmediateAction('key', e.code);
+    }
+    input.keys[e.code] = true;
+  }
+
+  function onKeyUp(e) {
+    input.keys[e.code] = false;
+  }
+
+  function onBlur() {
+    for (const k of Object.keys(input.keys)) input.keys[k] = false;
+  }
+
+  function updatePointer(e) {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    input.mouseCanvas.x = x;
+    input.mouseCanvas.y = y;
+    input.mouseInCanvas = true;
+    const vp = getViewport();
+    if (vp) {
+      const world = screenToWorldCoords(x, y, vp);
+      input.mouseWorld.x = world.x;
+      input.mouseWorld.y = world.y;
+    }
+  }
+
+  function onMouseDown(e) {
+    if (e.button !== 0) return;
+    updatePointer(e);
+    input.pendingClick = {
+      canvasX: input.mouseCanvas.x,
+      canvasY: input.mouseCanvas.y,
+      worldX: input.mouseWorld.x,
+      worldY: input.mouseWorld.y,
+    };
+    if (onImmediateAction) onImmediateAction('click', input.pendingClick);
+  }
+
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('blur', onBlur);
+  canvas.addEventListener('mousemove', updatePointer);
+  canvas.addEventListener('mousedown', onMouseDown);
+
+  return () => {
+    window.removeEventListener('keydown', onKeyDown);
+    window.removeEventListener('keyup', onKeyUp);
+    window.removeEventListener('blur', onBlur);
+    canvas.removeEventListener('mousemove', updatePointer);
+    canvas.removeEventListener('mousedown', onMouseDown);
   };
 }

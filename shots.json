@@ -1,5 +1,6 @@
 [
-  { "name": "1-start.jpg", "query": "?shot=start&seed=1" },
-  { "name": "2-play.jpg", "query": "?shot=play&seed=1" },
-  { "name": "3-end.jpg", "query": "?shot=end&seed=1" }
+  { "name": "1-infiltration.jpg", "query": "?shot=infiltration&seed=1" },
+  { "name": "2-alert-recovery.jpg", "query": "?shot=alert-recovery&seed=1" },
+  { "name": "3-extraction-route.jpg", "query": "?shot=extraction-route&seed=1" },
+  { "name": "4-campaign-select.jpg", "query": "?shot=campaign-select&seed=1" }
 ]
