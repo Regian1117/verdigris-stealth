@@ -205,16 +205,16 @@ export function playSpatialGuardFootstep(audio, gx, gy, px, py) {
   audio?.playSpatialGuardFootstep(gx, gy, px, py);
 }
 
+export function playBrassChime(audio) {
+  audio?.playBrassChime();
+}
+
 export function playPlayerSurfaceStep(audio, surface, crouching) {
   audio?.playPlayerSurfaceStep(surface, crouching);
 }
 
 export function playSuspicionSting(audio, isAlert) {
   audio?.playSuspicionSting(isAlert);
-}
-
-export function playBrassChime(audio) {
-  audio?.playBrassChime();
 }
 
 export function playLampSnuff(audio) {

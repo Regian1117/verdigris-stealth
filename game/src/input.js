@@ -1,37 +1,5 @@
 // Unified keyboard and mouse input controller with canvas-to-world coordinate projection.
 
-export function createInputState() {
-  const pressed = new Set();
-  return {
-    keys: Object.create(null),
-    mouseCanvas: { x: 640, y: 400 },
-    mouseWorld: { x: 560, y: 330 },
-    mouseInCanvas: false,
-    pendingClick: null,
-    press(code) {
-      pressed.add(code);
-    },
-    consumePressed(code) {
-      if (pressed.has(code)) {
-        pressed.delete(code);
-        return true;
-      }
-      return false;
-    },
-    clearFrame() {
-      pressed.clear();
-      this.pendingClick = null;
-    },
-  };
-}
-
-export function screenToWorldCoords(canvasX, canvasY, viewport) {
-  return {
-    x: (canvasX - viewport.offsetX) / viewport.scale,
-    y: (canvasY - viewport.offsetY) / viewport.scale,
-  };
-}
-
 export function bindKeyboardAndMouse(canvas, input, getViewport, onImmediateAction) {
   const preventKeys = new Set([
     'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab',
@@ -93,5 +61,37 @@ export function bindKeyboardAndMouse(canvas, input, getViewport, onImmediateActi
     window.removeEventListener('blur', onBlur);
     canvas.removeEventListener('mousemove', updatePointer);
     canvas.removeEventListener('mousedown', onMouseDown);
+  };
+}
+
+export function createInputState() {
+  const pressed = new Set();
+  return {
+    keys: Object.create(null),
+    mouseCanvas: { x: 640, y: 400 },
+    mouseWorld: { x: 560, y: 330 },
+    mouseInCanvas: false,
+    pendingClick: null,
+    press(code) {
+      pressed.add(code);
+    },
+    consumePressed(code) {
+      if (pressed.has(code)) {
+        pressed.delete(code);
+        return true;
+      }
+      return false;
+    },
+    clearFrame() {
+      pressed.clear();
+      this.pendingClick = null;
+    },
+  };
+}
+
+export function screenToWorldCoords(canvasX, canvasY, viewport) {
+  return {
+    x: (canvasX - viewport.offsetX) / viewport.scale,
+    y: (canvasY - viewport.offsetY) / viewport.scale,
   };
 }
